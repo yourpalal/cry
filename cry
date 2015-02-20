@@ -66,7 +66,10 @@ class Project(object):
                 print('dependencies are unresolvable!?!?!?!!!')
                 exit()
 
-            buildable.build()
+            try:
+                buildable.build()
+            except ValueError as e:
+                raise BuildError(buildable, e)
             buildable.built = True
 
             build_targets = [b for b in build_targets if not b.built]
@@ -80,12 +83,15 @@ class Project(object):
             return self.calculate_dependencies(new_targets)
         return build_targets
 
-    def get_target(self, target_type, name):
+    def get_target(self, target_type, name, requester=None):
         for t in self.targets:
             if t.target_type == target_type and t.name == name:
                 return t
 
-        raise ValueError("Couldn't find target {}:{}".format(target_type, name))
+        err = "Couldn't find target {}:{}".format(target_type, name)
+        if requester:
+            raise BuildError(requester, err)
+        raise ValueError(err)
 
     def walk(self):
         targets = []
@@ -143,7 +149,7 @@ class Target(object):
         }
 
     def all_loaded(self, project):
-        self.libs['local'] = [project.get_target('lib', lib) \
+        self.libs['local'] = [project.get_target('lib', lib, self) \
             for lib in self.libs['local']]
         for lib in self.libs['local']:
             self.headers['local'].append(lib.where)
@@ -272,11 +278,25 @@ class App(Target):
 
         return list(set(flags))
 
+class BuildError(Exception):
+    def __init__(self, target, reason):
+        self.target = target
+        self.reason = str(reason)
+
+        msg = 'Failed to build "{}":\n\t{}'.format(self.target, self.reason)
+        super(BuildError, self).__init__(msg)
+
 if __name__ == '__main__':
-    p = Project()
-    if len(sys.argv) == 2 and sys.argv[1] == 'clean':
-        p.clean()
-    elif len(sys.argv) > 1:
-        p.build(sys.argv[1:])
+    try:
+        p = Project()
+
+        if len(sys.argv) == 2 and sys.argv[1] == 'clean':
+            p.clean()
+        elif len(sys.argv) > 1:
+            p.build(sys.argv[1:])
+    except Exception as e:
+        print(str(e), file=sys.stderr)
+        exit(1)
+        
 
 # vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4
