@@ -1,0 +1,5 @@
+{
+    "debug": true,
+    "include-sys": ["/usr/include"],
+    "link-local": ["thang", "thing"]
+}

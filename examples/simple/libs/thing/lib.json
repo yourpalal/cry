@@ -1,0 +1,8 @@
+{
+	"debug": true,
+	"warn": ["all", "error"],
+	"include-sys": [],
+	"link-local": [],
+	"link-sys": ""
+}
+

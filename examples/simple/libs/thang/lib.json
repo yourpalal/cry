@@ -1,0 +1,8 @@
+{
+	"debug": true,
+	"warn": ["all", "error"],
+	"include-sys": ["eigen"],
+	"link-local": ["thing"]
+	"link-sys": "GL"
+}
+

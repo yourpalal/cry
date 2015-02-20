@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+
+
+import json, os, re, shutil, subprocess, sys
+
+# config options:
+# debug: true -> '-g', false -> ''
+# warn: ['all', 'error'] -> -Wall -Werror 
+# include-local: -> folders to include in header search path for ""
+# include-sys: -> folders to include in header search path for <>
+# link-local: -> list of libraries in this project used by this lib/app
+# link-dir: -> ['/my/include/path'] -> -L /my/include/path
+# link-sys: ['GL', 'm'] -> -lGL -lm
+
+
+def run_cmd(command):
+    print(' '.join(command))
+    try:
+        subprocess.check_call(command)
+    except subprocess.CalledProcessError:
+        print('build failed!')
+        exit(1)
+
+def fix_link_order(libs):
+    """fixes link order s.t. for all a, b: a depends on b -> a is ahead of b"""
+    unordered = set(libs)
+    reverse_order = []
+    while unordered:
+        for lib in unordered:
+            if all(d not in unordered for d in lib.libs['local']):
+                reverse_order.append(lib)
+                unordered.remove(lib)
+                break
+        else:
+            print("static link order is unresolvable!!")
+            exit(1)
+    return list(reversed(reverse_order))
+
+
+class Project(object):
+    def __init__(self, path=os.getcwd()):
+        self.path = path
+        self.targets = self.walk()
+        for t in self.targets:
+            t.all_loaded(self)
+
+    def clean(self):
+        for target in self.targets:
+            if (os.path.isfile(target.build_name)):
+                os.remove(target.build_name)
+        # TODO: centralize build dir definition
+        if os.path.isdir('build/'):
+            shutil.rmtree('build/')
+
+    def build(self, build_targets):
+        def get_build_target(bt):
+            return self.get_target(*bt.split(':'))
+        build_targets = set(map(get_build_target, build_targets))
+
+        build_targets = self.calculate_dependencies(build_targets)
+
+        while build_targets:
+            try:
+                buildable = next(b for b in build_targets if b.can_build())
+            except StopIteration:
+                print('dependencies are unresolvable!?!?!?!!!')
+                exit()
+
+            buildable.build()
+            buildable.built = True
+
+            build_targets = [b for b in build_targets if not b.built]
+
+    def calculate_dependencies(self, build_targets):
+        new_targets = set()
+        for build_target in build_targets:
+            new_targets.update(set(build_target.libs['local']))
+        if new_targets - build_targets:
+            new_targets.update(build_targets)
+            return self.calculate_dependencies(new_targets)
+        return build_targets
+
+    def get_target(self, target_type, name):
+        for t in self.targets:
+            if t.target_type == target_type and t.name == name:
+                return t
+
+        raise ValueError("Couldn't find target {}:{}".format(target_type, name))
+
+    def walk(self):
+        targets = []
+        build_dir = os.getcwd()
+        for dirpath, dirnames, filenames in os.walk(build_dir):
+            where = os.path.relpath(os.path.join(dirpath), build_dir)
+            new_targets = []
+            for subdir in dirnames:
+                lib_file = os.path.join(dirpath, subdir, 'lib.json')
+                app_file = os.path.join(dirpath, subdir, 'app.json')
+                if os.path.isfile(lib_file):
+                    new_targets.append(Lib(os.path.join(where, subdir)))
+                elif os.path.isfile(app_file):
+                    new_targets.append(App(os.path.join(where, subdir)))
+
+            # don't recurse into app/lib folders
+            for t in new_targets:
+                del dirnames[dirnames.index(t.name)]
+
+            targets += new_targets
+        return targets
+
+
+class Target(object):
+    def __init__(self, where, target_type):
+        self.name = os.path.split(where)[1]
+        self.where = where
+        self.target_type = target_type
+
+        self.load_data(target_type + '.json')
+        self.walk()
+        self.built = False
+
+    def __str__(self):
+        return '{}:{} @ {}'.format(self.target_type, self.name, self.where)
+
+    def load_data(self, filename):
+        filename = os.path.join(self.where, filename)
+        try:
+            self.data = json.loads(open(filename).read())
+        except ValueError as e:
+            print('failed to parse {}'.format(filename))
+            print('JSON error: {}'.format(str(e)))
+            exit(1)
+
+        self.ld = self.load_dict('ld', 'flags')
+        self.libs = {
+            'dir': self.load_list('link-local'),
+            'local': self.load_list('link-local'),
+            'sys': self.load_list('link-sys'),
+        }
+        self.headers = {
+            'local': self.load_list('include-local'),
+            'sys': self.load_list('include-sys'),
+        }
+
+    def all_loaded(self, project):
+        self.libs['local'] = [project.get_target('lib', lib) \
+            for lib in self.libs['local']]
+        for lib in self.libs['local']:
+            self.headers['local'].append(lib.where)
+            self.headers['sys'] += lib.headers['sys']
+
+    def walk(self):
+        header_mtime = 0
+        cpp_mtime = 0
+        cpp_files = []
+
+        for dirpath, dirnames, filenames in os.walk(self.where):
+            for f in filenames:
+                f = os.path.join(dirpath, f)
+                mtime = os.path.getmtime(f)
+                if os.path.splitext(f)[1] == '.cpp':
+                    cpp_mtime = max(cpp_mtime, mtime)
+                    cpp_files.append(f)
+                elif os.path.splitext(f)[1] == '.h':
+                    header_mtime = max(header_mtime, mtime)
+
+        self.header_mtime = header_mtime
+        self.cpp_mtime = cpp_mtime
+        self.cpp_files = cpp_files
+
+    def compiler_flags(self):
+        flags = []
+        flags += ['-iquote', self.where]
+        for lib in self.headers['local']:
+            flags += ['-iquote', lib]
+        for lib in self.headers['sys']:
+            flags += ['-isystem', lib]
+
+        for warning in self.data.get('warn', []):
+            flags.append('-W' + str(warning))
+
+        if self.data.get('debug') == True:
+            flags.append('-g')
+        return flags
+
+    def link_flags(self):
+        flags = []
+        for lib in self.libs['sys']:
+            flags.append('-l' + lib)
+
+        return flags
+
+    def load_dict(self, key, default_key='name'):
+        data = self.data.get(key)
+        if not data:
+            return {}
+        if type(data) is str:
+            data = dict({default_key: [data]})
+        elif type(data) in (list, tuple):
+            data = dict({default_key: data})
+        return data
+
+    def load_list(self, key):
+        data = self.data.get(key)
+        if not data:
+            return []
+        if type(data) is str:
+            data = [data]
+        else:
+            data = list(data)
+        return data
+
+    def compile_single(self, file_name):
+        build_name = os.path.splitext(file_name)[0] + '.o'
+        build_name = os.path.join('build', build_name)
+
+        os.makedirs(os.path.dirname(build_name), exist_ok=True)
+
+        command = ['g++', '-c', '-o', build_name]
+        command += [file_name,] + self.compiler_flags()
+        run_cmd(command)
+
+        return build_name
+
+
+class Lib(Target):
+    def __init__(self, where):
+        super().__init__(where, 'lib')
+        self.build_name = self.name + '.a'
+
+    def build(self):
+        object_files = [self.compile_single(f) for f in self.cpp_files]
+        command = ['ar', '-r', self.build_name] + object_files
+        run_cmd(command)
+        self.built = True
+
+    def can_build(self):
+        return True
+
+
+class App(Target):
+    def __init__(self, where):
+        super().__init__(where, 'app')
+        self.build_name = self.name
+
+    def all_libs(self):
+        # calculate all transitive dependencies
+        libs = set(self.libs['local'])
+        while True:
+            current_set = list(libs) # copy libs
+            for lib in current_set:
+                for l in lib.libs['local']:
+                    libs.add(l)
+            if len(current_set) == len(libs):
+                return libs
+
+    def build(self):
+        command = ['g++', '-o', self.build_name] + self.compiler_flags() \
+            + [self.compile_single(f) for f in self.cpp_files]  \
+            + [l.build_name for l in fix_link_order(self.all_libs())] \
+            + self.link_flags()
+        run_cmd(command)
+        self.built = True
+
+    def can_build(self):
+        return all(l.built for l in self.libs['local'])
+
+    def link_flags(self):
+        flags = super().link_flags()
+        for lib in self.libs['local']:
+            flags += ['-l' + l for l in lib.libs['sys']]
+
+        return list(set(flags))
+
+if __name__ == '__main__':
+    p = Project()
+    if len(sys.argv) == 2 and sys.argv[1] == 'clean':
+        p.clean()
+    elif len(sys.argv) > 1:
+        p.build(sys.argv[1:])
+
+# vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4

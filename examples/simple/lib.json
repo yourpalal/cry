@@ -1,0 +1,8 @@
+{
+	"debug": true,
+	"warn": ["all", "error"],
+	"include-sys": ["eigen"],
+	"link-local": ["parser", "mymath", "glwrap"],
+	"link-sys": "GL"
+}
+
