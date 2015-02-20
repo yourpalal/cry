@@ -11,6 +11,7 @@ import json, os, re, shutil, subprocess, sys
 # link-local: -> list of libraries in this project used by this lib/app
 # link-dir: -> ['/my/include/path'] -> -L /my/include/path
 # link-sys: ['GL', 'm'] -> -lGL -lm
+# cpp-std: "0x" -> -std=c++0x
 
 
 def run_cmd(command):
@@ -44,6 +45,14 @@ class Project(object):
         for t in self.targets:
             t.all_loaded(self)
 
+        try:
+            config = open(os.path.join(path, 'project.json')).read()
+            self.data = json.loads(config)
+        except ValueError as e:
+            print('failed to parse {}'.format(filename))
+            print('JSON error: {}'.format(str(e)))
+            exit(1)
+
     def clean(self):
         for target in self.targets:
             if (os.path.isfile(target.build_name)):
@@ -51,6 +60,13 @@ class Project(object):
         # TODO: centralize build dir definition
         if os.path.isdir('build/'):
             shutil.rmtree('build/')
+
+    def compiler_flags(self):
+        flags = []
+
+        if 'cpp-std' in self.data:
+            flags.append('-std=c++' + self.data['cpp-std'])
+        return flags
 
     def build(self, build_targets):
         def get_build_target(bt):
@@ -102,10 +118,12 @@ class Project(object):
             for subdir in dirnames:
                 lib_file = os.path.join(dirpath, subdir, 'lib.json')
                 app_file = os.path.join(dirpath, subdir, 'app.json')
+
+                folder = os.path.join(where, subdir)
                 if os.path.isfile(lib_file):
-                    new_targets.append(Lib(os.path.join(where, subdir)))
+                    new_targets.append(Lib(folder, self))
                 elif os.path.isfile(app_file):
-                    new_targets.append(App(os.path.join(where, subdir)))
+                    new_targets.append(App(folder, self))
 
             # don't recurse into app/lib folders
             for t in new_targets:
@@ -116,10 +134,11 @@ class Project(object):
 
 
 class Target(object):
-    def __init__(self, where, target_type):
+    def __init__(self, where, target_type, project):
         self.name = os.path.split(where)[1]
         self.where = where
         self.target_type = target_type
+        self.project = project
 
         self.load_data(target_type + '.json')
         self.walk()
@@ -187,6 +206,8 @@ class Target(object):
 
         if self.data.get('debug') == True:
             flags.append('-g')
+
+        flags += self.project.compiler_flags()
         return flags
 
     def link_flags(self):
@@ -230,8 +251,8 @@ class Target(object):
 
 
 class Lib(Target):
-    def __init__(self, where):
-        super().__init__(where, 'lib')
+    def __init__(self, where, project):
+        super().__init__(where, 'lib', project)
         self.build_name = self.name + '.a'
 
     def build(self):
@@ -245,8 +266,8 @@ class Lib(Target):
 
 
 class App(Target):
-    def __init__(self, where):
-        super().__init__(where, 'app')
+    def __init__(self, where, project):
+        super().__init__(where, 'app', project)
         self.build_name = self.name
 
     def all_libs(self):
@@ -293,8 +314,9 @@ if __name__ == '__main__':
         if len(sys.argv) == 2 and sys.argv[1] == 'clean':
             p.clean()
         elif len(sys.argv) > 1:
+            print('building', ', '.join(sys.argv[1:]))
             p.build(sys.argv[1:])
-    except Exception as e:
+    except BuildError as e:
         print(str(e), file=sys.stderr)
         exit(1)
         
