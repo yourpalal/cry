@@ -38,6 +38,30 @@ def fix_link_order(libs):
     return list(reversed(reverse_order))
 
 
+def compiler_flags(*configs):
+    ''' merge some configs and then generate compiler flags from them.
+        earlier configs take precedence.'''
+    config = {}
+    for c in reversed(configs):
+        for key, item in c.items():
+            if type(item) is list:
+                config.get(key, []).append(item)
+                # TODO: error message
+            else:
+                config[key] = item
+    flags = []
+
+    if 'cpp-std' in config:
+        flags.append('-std=c++' + config['cpp-std'])
+    if config.get('debug', False) == True:
+        flags.append('-g')
+
+    for warning in config.get('warn', []):
+        flags.append('-W' + str(warning))
+
+    return flags
+
+
 class Project(object):
     def __init__(self, path=os.getcwd()):
         self.path = path
@@ -60,13 +84,6 @@ class Project(object):
         # TODO: centralize build dir definition
         if os.path.isdir('build/'):
             shutil.rmtree('build/')
-
-    def compiler_flags(self):
-        flags = []
-
-        if 'cpp-std' in self.data:
-            flags.append('-std=c++' + self.data['cpp-std'])
-        return flags
 
     def build(self, build_targets):
         def get_build_target(bt):
@@ -194,20 +211,14 @@ class Target(object):
         self.cpp_files = cpp_files
 
     def compiler_flags(self):
-        flags = []
+        flags = compiler_flags(self.data, self.project.data)
+
         flags += ['-iquote', self.where]
         for lib in self.headers['local']:
             flags += ['-iquote', lib]
         for lib in self.headers['sys']:
             flags += ['-isystem', lib]
 
-        for warning in self.data.get('warn', []):
-            flags.append('-W' + str(warning))
-
-        if self.data.get('debug') == True:
-            flags.append('-g')
-
-        flags += self.project.compiler_flags()
         return flags
 
     def link_flags(self):
